@@ -15,19 +15,83 @@
   *
   ******************************************************************************
   */
+
+#define USE_TICKLESS_IDLE 1
+#define USE_MY_SUPPRESS_TICKS_AND_SLEEP 0
+#define USE_PRANAV 0
+// #define configUSE_TICKLESS_IDLE 1
+// #define configEXPECTED_IDLE_TIME_BEFORE_SLEEP 50
+
+//PRANAV METHOD
+// #define configUSE_IDLE_HOOK                      1
+
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
+
+
 #include "main.h"
 #include "cmsis_os.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
+#include "FreeRTOS.h"                   // ARM.FreeRTOS::RTOS:Core
+#include "task.h"                       // ARM.FreeRTOS::RTOS:Core
+#include "event_groups.h"               // ARM.FreeRTOS::RTOS:Event Groups
+#include "semphr.h"                     // ARM.FreeRTOS::RTOS:Core
+
+void TaskWait(void *argument);
+void TaskToggleFiveTimes(void *argument);
+TaskHandle_t TaskWaitHandler, TaskToggleFiveTimesHandler;
+
+SemaphoreHandle_t semaphore;
+
+TickType_t shortTimeOut = 50;		// portMAX_DELAY
+
+
+#define BLINK_TIME 250
+TickType_t blinkTicks = BLINK_TIME / portTICK_PERIOD_MS;
+
+
+
+
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
+#if USE_MY_SUPPRESS_TICKS_AND_SLEEP
 
+	#define portSUPPRESS_TICKS_AND_SLEEP( xIdleTime ) vApplicationSleep( xIdleTime )
+
+	void vApplicationSleep(TickType_t xExpectedIdleTime)
+	{
+		// Ensure the expected idle time is at least the minimum time before sleep
+		if (xExpectedIdleTime > (configEXPECTED_IDLE_TIME_BEFORE_SLEEP  / portTICK_PERIOD_MS))
+		{
+			// Enter critical section to disable interrupts
+			__disable_irq();
+
+			// Stop the SysTick timer or other tick source
+			vPortSetupTimerInterruptForSleep(xExpectedIdleTime);
+
+			// Enter low-power mode (e.g., WFI instruction on ARM Cortex-M)
+			__WFI();
+
+			// Re-enable interrupts
+			__enable_irq();
+
+			// Re-enable the SysTick timer or other tick source
+			vPortSetupTimerInterruptAfterSleep();
+		}
+		else
+		{
+			// If expected idle time is less than the threshold, do not enter sleep mode
+			// Instead, perform normal idle tasks
+		}
+	}
+
+#endif
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -57,6 +121,98 @@ void SystemClock_Config(void);
 void StartDefaultTask(void *argument);
 
 /* USER CODE BEGIN PFP */
+
+
+void vApplicationIdleHook(void){
+	HAL_PWR_EnterSLEEPMode(PWR_MAINREGULATOR_ON, PWR_SLEEPENTRY_WFI); // shleep
+}
+
+
+
+
+
+void TaskWait(void *argument)
+{
+	for(;;)
+	{
+
+		xSemaphoreGive(semaphore);
+		vTaskDelay(5000/portTICK_PERIOD_MS);
+
+	}
+}
+
+
+void TaskToggleFiveTimes(void *argument)
+{
+	for(;;)
+	{
+
+		if (xSemaphoreTake(semaphore, shortTimeOut) == pdPASS) {
+
+			GPIOA->ODR |= GPIO_ODR_OD5;
+			for (int i = 0; i < 9; i++){
+				vTaskDelay(blinkTicks);
+				GPIOA->ODR ^= GPIO_ODR_OD5;
+			}
+
+		}
+	}
+
+}
+
+//// Task will toggle PC2 when it receives task3 semaphore
+////  if it times out waiting for the semaphore it will toggle PC3
+//void Task3(void *argument)
+//{
+//	for(;;)
+//	{								 // portMAX_DELAY
+//		if (xSemaphoreTake(task3Sema, shortTimeOut) == pdPASS) {
+//			GPIOC->ODR ^= GPIO_ODR_OD2;			// toggle PC2
+//		}
+//		else {
+//			GPIOC->ODR ^= GPIO_ODR_OD3;			// toggle PC3
+//		}
+//	}
+//}
+
+
+
+
+/*
+ * Configure PC0-PC3 for GPIO Output
+ * push-pull, low speed, no pull-up/pull-down resistors
+ * Initialize all to 0s
+ */
+void PortC_Init(void)
+{
+	// turn on clock to GPIOC
+	RCC->AHB2ENR |= RCC_AHB2ENR_GPIOCEN;
+
+	// Configure PC0-3 for GPIO output
+	GPIOC->MODER   &= ~(GPIO_MODER_MODE0 | GPIO_MODER_MODE1 |
+					    GPIO_MODER_MODE2 | GPIO_MODER_MODE3);
+	GPIOC->MODER   |=  ((1 << GPIO_MODER_MODE0_Pos) |
+					    (1 << GPIO_MODER_MODE1_Pos) |
+					    (1 << GPIO_MODER_MODE2_Pos) |
+					    (1 << GPIO_MODER_MODE3_Pos));
+	GPIOC->OTYPER  &= ~(GPIO_OTYPER_OT0 | GPIO_OTYPER_OT1 |
+					    GPIO_OTYPER_OT2 | GPIO_OTYPER_OT3);
+	GPIOC->BSRR    =   (GPIO_BSRR_BR0 | GPIO_BSRR_BR1 |
+					    GPIO_BSRR_BR2 | GPIO_BSRR_BR3);
+
+	// Configure PC13 for user button input
+	GPIOC->MODER &= ~(GPIO_MODER_MODE13);
+	GPIOC->PUPDR &= ~(GPIO_PUPDR_PUPD13);
+
+	// Configure PA5 for LED output
+	RCC->AHB2ENR |= RCC_AHB2ENR_GPIOAEN;
+	GPIOA->MODER   &= ~(GPIO_MODER_MODE5);
+	GPIOA->MODER   |=  (1 << GPIO_MODER_MODE5_Pos);
+	GPIOA->OSPEEDR &= ~(GPIO_OSPEEDR_OSPEED5);
+	GPIOA->OTYPER  &= ~(GPIO_OTYPER_OT5);
+	GPIOA->ODR     &= ~(GPIO_PIN_5);
+}
 
 /* USER CODE END PFP */
 
@@ -93,6 +249,49 @@ int main(void)
 
   /* Initialize all configured peripherals */
   /* USER CODE BEGIN 2 */
+
+
+  PortC_Init();
+  // Create the tasks
+
+  	BaseType_t retVal;
+    retVal = xTaskCreate(TaskWait, "TaskWait", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY + 4, &TaskWaitHandler);
+    if (retVal != pdPASS) { while(1);}	// check if task creation failed
+
+    retVal = xTaskCreate(TaskToggleFiveTimes, "TaskToggleFiveTimes", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY + 5, &TaskToggleFiveTimesHandler);
+    if (retVal != pdPASS) { while(1);}	// check if task creation failed
+
+//    retVal = xTaskCreate(Task3, "task3", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY + 4, &task3Handler);
+//    if (retVal != pdPASS) { while(1);}	// check if task creation failed
+
+    // Create Semaphores for TaskToggleFiveTimes and task3
+    semaphore = xSemaphoreCreateBinary();
+    if (semaphore == NULL) { while(1); }
+
+//    task3Sema = xSemaphoreCreateBinary();
+//    if (task3Sema == NULL) { while(1); }
+
+    // Start scheduler
+    vTaskStartScheduler();
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  //////////////////////////////////////////
+  /// WE NEVER HIT THIS POINT, JUST KEEPING IT HERE FOR THE SAKE OF IOC RESETS
+
 
   /* USER CODE END 2 */
 
