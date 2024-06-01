@@ -176,6 +176,6 @@ standard names. */
 #if USE_PRANAV
    #define configUSE_IDLE_HOOK                      1
 #endif
-  /* USER CODE END Defines */
+/* USER CODE END Defines */
 
 #endif /* FREERTOS_CONFIG_H */
